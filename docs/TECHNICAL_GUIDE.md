@@ -69,7 +69,11 @@ or explicitly regenerated with `--overwrite`.
 - Input length: 10 frames.
 - Output length: 8 frames.
 - Nominal cadence: 15 minutes.
-- Continuity tolerance: configured in `nowcasting/training/train.py`.
+- Continuity tolerance: the nominal interval plus/minus one ninth of that
+  interval, defined in `nowcasting/config.py`. At 15 minutes this preserves
+  the original strict 800--1000 second bounds. `NOWCAST_CADENCE_MINUTES` changes
+  preprocessing checks, sequence construction, inference checks, and lead
+  labels together.
 - Echo filtering uses **input frames only**; future truth must not select the
   sample.
 - Split complete calendar days (or independently identified storm events)
@@ -101,6 +105,24 @@ Coverage weights exclude unobserved voxels from the loss and verification.
 Fresh training is the default. Resuming is allowed only when checkpoint
 metadata matches the architecture, input/output lengths, tensor shape, and
 schema version.
+
+All training, prediction, and diagnostic entrypoints use the loader in
+`nowcasting/data/model_data.py`. Each tensor requires its provenance manifest
+and `_coverage/<scan>.npy` companion, with matching content hashes, processing
+settings, and source scan identity. Incorrect shapes, non-finite values, and
+values outside the reflectivity or coverage ranges are rejected. Legacy data
+without these sidecars must be regenerated with `--overwrite`; it is never
+assumed to have complete radar coverage.
+
+Training datasets have a known, finite cardinality. Keras starts a fresh
+iterator each epoch, including validation. Retraining step limits bound each
+epoch's dataset with `take()`; held-out evaluation always uses the full test
+dataset. Incomplete final batches are retained.
+
+`nowcasting/training/train.py` handles orchestration. Dataset construction,
+losses, metrics, held-out evaluation, and checkpoint compatibility live in
+separate modules in `nowcasting/training/`. Tensor loading and day splitting
+live in `nowcasting/data/` and can be tested without TensorFlow.
 
 ```powershell
 python scripts/train.py

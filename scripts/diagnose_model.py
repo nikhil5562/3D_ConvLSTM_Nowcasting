@@ -2,100 +2,31 @@
 Diagnostic script to verify model/data integrity and inference viability.
 """
 
-import glob
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
-import tensorflow as tf
-
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from nowcasting.models.model_tf2 import build_model
-from nowcasting.config import DBZ_MAX
-from nowcasting.config import DBZ_MIN
 from nowcasting.config import INPUT_CHANNELS
 from nowcasting.config import INPUT_LENGTH
 from nowcasting.config import OUTPUT_LENGTH
 from nowcasting.config import TARGET_SHAPE
 from nowcasting.paths import MODEL_SAVE_DIR
 from nowcasting.paths import PROCESSED_DATA_DIR
-from nowcasting.training.train import load_compatible_weights
-from nowcasting.training.train import _prepare_coverage
-
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="ignore")
-
-CONT_MIN_SEC = 800
-CONT_MAX_SEC = 1000
+from nowcasting.training.checkpoints import load_compatible_weights
+from nowcasting.data.model_data import get_sorted_files as _get_sorted_files
+from nowcasting.data.model_data import load_and_normalize_sequence
+from nowcasting.data.timestamps import find_contiguous_window as _find_contiguous_window
 
 WEIGHTS_PATH = str(MODEL_SAVE_DIR / "final_model.weights.h5")
 DATA_DIR = str(PROCESSED_DATA_DIR)
-
-
-def parse_timestamp(filename):
-    basename = os.path.basename(filename)
-    parts = basename.split("_")
-    dt_str = parts[1] + "_" + parts[2]
-    return datetime.strptime(dt_str, "%d%b%Y_%H%M%S")
-
-
-def _ensure_3d_shape(data, target_shape):
-    array = np.asarray(data)
-    if array.ndim > 3:
-        array = np.squeeze(array)
-    if array.ndim != 3:
-        raise ValueError(f"Expected 3D volume, got shape {array.shape}")
-
-    target_d, target_h, target_w = target_shape
-    data_d, data_h, data_w = array.shape
-    array = array[:target_d, :target_h, :target_w]
-
-    pad_d = max(0, target_d - data_d)
-    pad_h = max(0, target_h - data_h)
-    pad_w = max(0, target_w - data_w)
-    if pad_d or pad_h or pad_w:
-        array = np.pad(array, ((0, pad_d), (0, pad_h), (0, pad_w)), mode="constant")
-    return array
-
-
-def _prepare_frame(file_path):
-    data = np.load(file_path)
-    data = _ensure_3d_shape(data, TARGET_SHAPE)
-    data = np.nan_to_num(data, nan=0.0, posinf=DBZ_MAX, neginf=DBZ_MIN)
-    data = np.clip(data, DBZ_MIN, DBZ_MAX).astype(np.float32)
-    return data / DBZ_MAX
-
-
-def _get_sorted_files(data_dir):
-    files = sorted(glob.glob(os.path.join(data_dir, "*.npy")))
-    valid = []
-    for file_path in files:
-        try:
-            valid.append({"path": file_path, "time": parse_timestamp(file_path)})
-        except Exception:
-            continue
-    valid.sort(key=lambda x: x["time"])
-    return valid
-
-
-def _find_contiguous_window(sorted_files, seq_len):
-    for i in range(len(sorted_files) - seq_len + 1):
-        ok = True
-        for j in range(1, seq_len):
-            diff = (sorted_files[i + j]["time"] - sorted_files[i + j - 1]["time"]).total_seconds()
-            if not (CONT_MIN_SEC < diff < CONT_MAX_SEC):
-                ok = False
-                break
-        if ok:
-            return sorted_files[i : i + seq_len]
-    return None
 
 
 def main():
@@ -139,7 +70,11 @@ def main():
             print(f"  FAIL: could not load weights: {exc}")
 
     print("\n3. CHECKING PREPROCESSED DATA...")
-    sorted_files = _get_sorted_files(DATA_DIR)
+    try:
+        sorted_files = _get_sorted_files(DATA_DIR)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"  FAIL: invalid model data: {exc}")
+        return 1
     print(f"  Files found: {len(sorted_files)}")
     if sorted_files:
         status["data_found"] = True
@@ -162,16 +97,7 @@ def main():
                 )
 
             input_files = [item["path"] for item in window[:INPUT_LENGTH]]
-            x_frames = []
-            for file_path in input_files:
-                frame = _prepare_frame(file_path)
-                frame = np.expand_dims(frame, axis=-1)
-                x_frames.append(
-                    np.concatenate([frame, _prepare_coverage(file_path)], axis=-1)
-                )
-
-            x_test = np.stack(x_frames).astype(np.float32)
-            x_test = np.expand_dims(x_test, axis=0)
+            x_test = load_and_normalize_sequence(input_files, include_coverage=True)[None, ...]
             print(f"  Input tensor shape: {x_test.shape}")
             print(f"  Input tensor range: [{x_test.min():.4f}, {x_test.max():.4f}]")
 

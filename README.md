@@ -28,7 +28,7 @@ MOSDAC Level-2B polar NetCDF volumes
 |-- nowcasting/
 |   |-- data/                 Radar reading, QC, gridding and tensorization
 |   |-- models/               3-D ConvLSTM architecture
-|   `-- training/             Splitting, loss, metrics and training pipeline
+|   `-- training/             Datasets, loss, metrics, checkpoints and training
 |-- 3d_data_scripts/          Level-2B-to-model preprocessing commands
 |-- scripts/                  Training, retraining, prediction and diagnosis
 |-- tests/                    Focused regression tests for supported code
@@ -55,6 +55,10 @@ py -3.9 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
+
+For the exact verified Windows/Python 3.9 dependency versions, install
+`requirements-lock-py39-windows.txt` instead. A project-local `.venv` keeps
+TensorFlow and the radar libraries separate from other Python installations.
 
 TensorFlow may already be supplied by an HPC environment. In that case, use
 the site's recommended environment instead of installing a second TensorFlow
@@ -109,6 +113,15 @@ python scripts/train.py
 
 Training saves versioned weights, a day-independent split manifest, the held-out
 test sequences, and machine-readable test metrics in `saved_models`.
+
+Training and prediction require each tensor's provenance manifest and coverage
+sidecar. Missing sidecars, mismatched hashes, incorrect shapes, and invalid
+values stop the run. Regenerate legacy or damaged products using the
+preprocessing command with `--overwrite`.
+
+`NOWCAST_CADENCE_MINUTES` changes the scan interval used by preprocessing,
+training, prediction, and forecast labels. The default is 15 minutes; continuity
+checks allow deviations of less than one ninth of the configured interval.
 
 Resume only from a compatible, versioned checkpoint:
 

@@ -123,10 +123,14 @@ def _load_manifest(artifact_path: Path) -> dict[str, Any]:
         raise ProvenanceMismatchError(
             f"Cannot read provenance manifest {sidecar}: {exc}. Regenerate with overwrite enabled."
         ) from exc
+    if not isinstance(payload, dict):
+        raise ProvenanceMismatchError(f"Provenance manifest must be a JSON object: {sidecar}")
     return payload
 
 
 def _verify_identity(path: Path, recorded: dict[str, Any]) -> None:
+    if not isinstance(recorded, dict):
+        raise ProvenanceMismatchError(f"Invalid artifact identity for {path}")
     if not path.is_file():
         raise ProvenanceMismatchError(f"Recorded artifact is missing: {path}")
     actual = file_identity(path, include_path=False)
@@ -138,12 +142,12 @@ def _verify_identity(path: Path, recorded: dict[str, Any]) -> None:
         )
 
 
-def validate_reusable_artifact(
+def validate_artifact_manifest(
     artifact_path: str | Path,
-    expected_provenance: dict[str, Any],
     related_directory: str | Path | None = None,
+    required_related_names: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """Refuse reuse unless provenance and all recorded file hashes still match."""
+    """Validate delivered products without requiring their large source files."""
     artifact = Path(artifact_path)
     payload = _load_manifest(artifact)
     if payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
@@ -151,14 +155,33 @@ def validate_reusable_artifact(
             f"Unsupported provenance schema for {artifact}: {payload.get('schema_version')!r}. "
             "Regenerate it with overwrite enabled."
         )
-    if payload.get("provenance") != expected_provenance:
-        raise ProvenanceMismatchError(
-            f"Existing artifact was produced from different source data or settings: {artifact}. "
-            "Regenerate it with overwrite=True/--overwrite."
-        )
-
     _verify_identity(artifact, payload.get("artifact", {}))
     related_root = Path(related_directory) if related_directory is not None else artifact.parent
-    for identity in payload.get("related_artifacts", []):
+    related = payload.get("related_artifacts", [])
+    if not isinstance(related, list):
+        raise ProvenanceMismatchError(f"Invalid companion identities for {artifact}")
+    names = []
+    for identity in related:
+        name = identity.get("name") if isinstance(identity, dict) else None
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            raise ProvenanceMismatchError(f"Invalid companion identity for {artifact}")
+        names.append(name)
         _verify_identity(related_root / identity["name"], identity)
+    if len(names) != len(set(names)) or not set(required_related_names).issubset(names):
+        raise ProvenanceMismatchError(f"Required coverage companion is missing or duplicated in {manifest_path(artifact)}")
+    return payload
+
+
+def validate_reusable_artifact(
+    artifact_path: str | Path,
+    expected_provenance: dict[str, Any],
+    related_directory: str | Path | None = None,
+) -> dict[str, Any]:
+    """Refuse reuse unless provenance and all recorded file hashes still match."""
+    payload = validate_artifact_manifest(artifact_path, related_directory=related_directory)
+    if payload.get("provenance") != expected_provenance:
+        raise ProvenanceMismatchError(
+            f"Existing artifact was produced from different source data or settings: {artifact_path}. "
+            "Regenerate it with overwrite=True/--overwrite."
+        )
     return payload

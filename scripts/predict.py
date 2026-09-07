@@ -1,21 +1,20 @@
-import glob
 import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import tensorflow as tf
+
 from matplotlib.colors import BoundaryNorm, ListedColormap
+
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from nowcasting.models.model_tf2 import build_model
 from nowcasting.config import DBZ_MAX
-from nowcasting.config import DBZ_MIN
 from nowcasting.config import FORECAST_LEAD_MINUTES
 from nowcasting.config import INPUT_CHANNELS
 from nowcasting.config import INPUT_LENGTH
@@ -23,101 +22,13 @@ from nowcasting.config import OUTPUT_LENGTH
 from nowcasting.config import TARGET_SHAPE
 from nowcasting.paths import MODEL_SAVE_DIR
 from nowcasting.paths import PREDICTIONS_DIR
-from nowcasting.paths import PROCESSED_DATA_DIR
-from nowcasting.training.train import load_compatible_weights
-from nowcasting.training.train import _prepare_coverage
-
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="ignore")
-
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-
-CONT_MIN_SEC = 800
-CONT_MAX_SEC = 1000
+from nowcasting.training.checkpoints import load_compatible_weights
+from nowcasting.data.model_data import load_and_normalize_sequence
+from nowcasting.data.timestamps import validate_sequence_paths
 
 WEIGHTS_PATH = str(MODEL_SAVE_DIR / "final_model.weights.h5")
-DATA_DIR = str(PROCESSED_DATA_DIR)
 OUTPUT_DIR = str(PREDICTIONS_DIR)
 TEST_SPLIT_PATH = MODEL_SAVE_DIR / "test_sequences.json"
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-
-def parse_timestamp(filename):
-    basename = os.path.basename(filename)
-    parts = basename.split("_")
-    dt_str = parts[1] + "_" + parts[2]
-    return datetime.strptime(dt_str, "%d%b%Y_%H%M%S")
-
-
-def get_sorted_files(data_dir):
-    files = sorted(glob.glob(os.path.join(data_dir, "*.npy")))
-    valid_files = []
-    for file_path in files:
-        try:
-            timestamp = parse_timestamp(file_path)
-            valid_files.append({"path": file_path, "time": timestamp})
-        except Exception:
-            continue
-    valid_files.sort(key=lambda x: x["time"])
-    return valid_files
-
-
-def _ensure_3d_shape(data, target_shape):
-    array = np.asarray(data)
-    if array.ndim > 3:
-        array = np.squeeze(array)
-    if array.ndim != 3:
-        raise ValueError(f"Expected 3D array, got shape {array.shape}")
-
-    target_d, target_h, target_w = target_shape
-    data_d, data_h, data_w = array.shape
-
-    array = array[:target_d, :target_h, :target_w]
-    pad_d = max(0, target_d - data_d)
-    pad_h = max(0, target_h - data_h)
-    pad_w = max(0, target_w - data_w)
-    if pad_d or pad_h or pad_w:
-        array = np.pad(array, ((0, pad_d), (0, pad_h), (0, pad_w)), mode="constant")
-    return array
-
-
-def load_and_normalize_sequence(file_paths, include_coverage=False):
-    frames = []
-    for idx, path in enumerate(file_paths):
-        data = np.load(path)
-        data = _ensure_3d_shape(data, TARGET_SHAPE)
-        data = np.nan_to_num(data, nan=0.0, posinf=DBZ_MAX, neginf=DBZ_MIN)
-        data = np.clip(data, DBZ_MIN, DBZ_MAX).astype(np.float32)
-
-        if idx == 0:
-            print(f"  Input repaired shape: {data.shape}")
-            print(f"  Input repaired range: [{data.min():.2f}, {data.max():.2f}] dBZ")
-
-        data = data / DBZ_MAX
-        data = np.expand_dims(data, axis=-1)
-        if include_coverage:
-            data = np.concatenate([data, _prepare_coverage(path)], axis=-1)
-        frames.append(data)
-
-    return np.stack(frames).astype(np.float32)
-
-
-def select_contiguous_sequence(sorted_files, seq_len):
-    valid = []
-    for i in range(len(sorted_files) - seq_len + 1):
-        is_contiguous = True
-        for j in range(1, seq_len):
-            diff = (sorted_files[i + j]["time"] - sorted_files[i + j - 1]["time"]).total_seconds()
-            if not (CONT_MIN_SEC < diff < CONT_MAX_SEC):
-                is_contiguous = False
-                break
-        if is_contiguous:
-            valid.append(sorted_files[i : i + seq_len])
-
-    if not valid:
-        return None
-    return valid[len(valid) // 2]
 
 
 def load_held_out_sequence(sequence_index=0):
@@ -136,12 +47,7 @@ def load_held_out_sequence(sequence_index=0):
             f"Test sequence index {sequence_index} is out of range for "
             f"{len(sequences)} sequences."
         ) from exc
-    expected_length = INPUT_LENGTH + OUTPUT_LENGTH
-    if len(sequence_paths) != expected_length:
-        raise ValueError(
-            f"Held-out sequence has {len(sequence_paths)} frames; current experiment "
-            f"requires {expected_length}. Regenerate the split with the current code."
-        )
+    validate_sequence_paths(sequence_paths, INPUT_LENGTH + OUTPUT_LENGTH)
     missing = [path for path in sequence_paths if not Path(path).exists()]
     if missing:
         raise FileNotFoundError(f"Held-out sequence contains missing file: {missing[0]}")
@@ -218,33 +124,25 @@ def visualize_comparison_cartesian(y_true, y_pred, timestep, save_path):
 
 def main():
     try:
+        sequence_index = int(os.environ.get("NOWCAST_TEST_SEQUENCE_INDEX", "0"))
+        sequence_paths = load_held_out_sequence(sequence_index)
+        input_files = sequence_paths[:INPUT_LENGTH]
+        target_files = sequence_paths[INPUT_LENGTH:]
+        print("Validating and loading held-out model data...")
+        x_input = load_and_normalize_sequence(input_files, include_coverage=True)[None, ...]
+        y_true = load_and_normalize_sequence(target_files)
+
         print("Building model...")
         input_shape = (INPUT_LENGTH, *TARGET_SHAPE, INPUT_CHANNELS)
         model = build_model(input_shape, INPUT_LENGTH, OUTPUT_LENGTH)
-
         print(f"Loading trained weights from: {WEIGHTS_PATH}")
         load_compatible_weights(model, WEIGHTS_PATH)
         print("Compatible model weights loaded successfully.")
-
-        sequence_index = int(os.environ.get("NOWCAST_TEST_SEQUENCE_INDEX", "0"))
-        sequence_paths = load_held_out_sequence(sequence_index)
     except Exception as exc:
         print(f"ERROR: {exc}")
         return 1
 
-    input_files = sequence_paths[:INPUT_LENGTH]
-    target_files = sequence_paths[INPUT_LENGTH:]
-
-    print(f"Input files: {os.path.basename(input_files[0])} -> {os.path.basename(input_files[-1])}")
-    print(f"Target files: {os.path.basename(target_files[0])} -> {os.path.basename(target_files[-1])}")
-
-    print("\nLoading input sequence...")
-    x_input = load_and_normalize_sequence(input_files, include_coverage=True)
-    x_input = np.expand_dims(x_input, axis=0)
-
-    print("Loading ground truth...")
-    y_true = load_and_normalize_sequence(target_files)
-
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     print("\nRunning model prediction...")
     y_pred = model.predict(x_input, verbose=1)[0]
 

@@ -10,6 +10,9 @@ from typing import Iterable
 import numpy as np
 import pyart
 
+from nowcasting.config import CONT_MAX_SEC, CONT_MIN_SEC
+from nowcasting.data.timestamps import parse_timestamp
+
 NYQUIST_MS = 24.0
 DEFAULT_MIN_FULL_SCAN_SIZE_MB = 100.0
 DEFAULT_MIN_SWEEPS = 11
@@ -28,8 +31,7 @@ def parse_timestamp_from_filename(filename: str | Path) -> datetime:
     if not match:
         raise ValueError(f"Filename does not match RCTLS L2B standard pattern: {filename}")
 
-    day, month, year, hour, minute, second = match.groups()
-    return datetime.strptime(f"{day}{month}{year} {hour}{minute}{second}", "%d%b%Y %H%M%S")
+    return parse_timestamp(filename)
 
 
 def is_l2b_standard_file(path: str | Path) -> bool:
@@ -146,8 +148,8 @@ def _fix_sweep_ray_indices(radar: pyart.core.Radar) -> None:
 def diagnose_sequence_capacity(
     paths: Iterable[str | Path],
     frames_per_sequence: int,
-    min_gap_seconds: float = 800.0,
-    max_gap_seconds: float = 1000.0,
+    min_gap_seconds: float = CONT_MIN_SEC,
+    max_gap_seconds: float = CONT_MAX_SEC,
 ) -> dict[str, object]:
     """Summarize contiguous timestamp runs before expensive gridding/training."""
     if frames_per_sequence <= 0:

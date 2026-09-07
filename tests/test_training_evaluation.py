@@ -12,19 +12,19 @@ from nowcasting.config import INPUT_CHANNELS
 from nowcasting.config import OUTPUT_LENGTH
 from nowcasting.config import TARGET_SHAPE
 from nowcasting.models.model_tf2 import build_model
-from nowcasting.training.train import CheckpointCompatibilityError
-from nowcasting.training.train import ContingencyMetric
-from nowcasting.training.train import CoverageWeightedLoss
-from nowcasting.training.train import _report_split_overlap
-from nowcasting.training.train import _architecture_sha256
-from nowcasting.training.train import checkpoint_metadata_path
-from nowcasting.training.train import create_day_independent_splits
-from nowcasting.training.train import evaluate_test_set
-from nowcasting.training.train import load_compatible_weights
-from nowcasting.training.train import save_versioned_weights
-from nowcasting.training.train import sequence_generator
-from nowcasting.training.train import training_backup_directory
-from nowcasting.training.train import weighted_loss
+from nowcasting.training.checkpoints import CheckpointCompatibilityError
+from nowcasting.training.metrics import ContingencyMetric
+from nowcasting.training.losses import CoverageWeightedLoss
+from nowcasting.data.sequences import _report_split_overlap
+from nowcasting.training.checkpoints import _architecture_sha256
+from nowcasting.training.checkpoints import checkpoint_metadata_path
+from nowcasting.data.sequences import create_day_independent_splits
+from nowcasting.training.evaluation import evaluate_test_set
+from nowcasting.training.checkpoints import load_compatible_weights
+from nowcasting.training.checkpoints import save_versioned_weights
+from nowcasting.data.sequences import sequence_generator
+from nowcasting.training.checkpoints import training_backup_directory
+from nowcasting.training.losses import weighted_loss
 
 
 def test_default_horizon_is_eight_15_minute_leads_to_120_minutes():
@@ -130,18 +130,11 @@ def test_day_split_happens_before_windows_and_has_no_day_overlap():
     _report_split_overlap(train, validation, test)
 
 
-def test_generator_adds_input_coverage_channel_and_target_weights(tmp_path):
-    paths = []
-    coverage_dir = tmp_path / "_coverage"
-    coverage_dir.mkdir()
-    for index, value in enumerate((10.0, 20.0)):
-        path = tmp_path / f"RCTLS_01JAN2025_00{index * 15:02d}00_L2B_STD.npy"
-        np.save(path, np.full((2, 2, 2), value, dtype=np.float32))
-        np.save(
-            coverage_dir / path.name,
-            np.full((2, 2, 2), 0.25 + 0.5 * index, dtype=np.float32),
-        )
-        paths.append(str(path))
+def test_generator_adds_input_coverage_channel_and_target_weights(make_model_frame):
+    paths = [
+        make_model_frame(index, dbz=value, coverage=0.25 + 0.5 * index)
+        for index, value in enumerate((10.0, 20.0))
+    ]
 
     x, y, target_coverage = next(
         sequence_generator([paths], input_len=1, output_len=1)

@@ -7,6 +7,13 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from nowcasting.config import DBZ_MAX, DBZ_MIN, TARGET_SHAPE
+from nowcasting.data.model_data import (
+    COVERAGE_DIRECTORY_NAME,
+    TENSOR_PIPELINE_VERSION,
+    tensor_processing_settings,
+)
+
 from nowcasting.data.provenance import (
     file_identity,
     save_npy_atomic,
@@ -15,11 +22,7 @@ from nowcasting.data.provenance import (
 )
 
 FULL_CUBE_SHAPE = (81, 481, 481)
-MODEL_TENSOR_SHAPE = (16, 120, 120)
-DBZ_MIN = 0.0
-DBZ_MAX = 80.0
-TENSOR_PIPELINE_VERSION = "cartesian-to-model-tensor-v2"
-COVERAGE_DIRECTORY_NAME = "_coverage"
+MODEL_TENSOR_SHAPE = TARGET_SHAPE
 
 
 def _as_3d_cube(data: np.ndarray | np.ma.MaskedArray) -> np.ndarray:
@@ -122,14 +125,7 @@ def _tensor_provenance(cube_nc: str | Path) -> dict:
         "pipeline_version": TENSOR_PIPELINE_VERSION,
         "stage": "cartesian_grid_to_model_tensor",
         "source": file_identity(cube_nc, include_path=False, include_mtime=False),
-        "settings": {
-            "input_crop": [64, 480, 480],
-            "output_shape": list(MODEL_TENSOR_SHAPE),
-            "pooling": "valid_only_linear_z_mean_4x4x4",
-            "dbz_range": [DBZ_MIN, DBZ_MAX],
-            "missing_output_dbz": DBZ_MIN,
-            "coverage_companion": True,
-        },
+        "settings": tensor_processing_settings(),
     }
 
 
