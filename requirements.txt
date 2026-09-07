@@ -1,0 +1,20 @@
+# Recommended interpreter: Python 3.9.12
+
+# Deep-learning framework
+tensorflow==2.20.0
+
+# Numerical and file-processing libraries
+numpy==2.0.2
+scipy==1.13.1
+h5py==3.14.0
+xarray>=2024.1
+netCDF4>=1.6
+
+# Radar processing
+arm-pyart==1.19.2
+
+# Training and forecast plots
+matplotlib==3.9.4
+
+# Regression tests
+pytest>=8.0
